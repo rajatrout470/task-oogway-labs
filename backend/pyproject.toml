@@ -1,0 +1,68 @@
+[project]
+name = "lenny-growth-assistant"
+version = "0.1.0"
+description = "Grounded conversational assistant over Lenny's Podcast transcripts"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+
+    # asyncpg for the app (async), psycopg for the sync migration runner.
+    "asyncpg>=0.30",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
+
+    "httpx>=0.27",
+    "python-frontmatter>=1.1",
+    "PyYAML>=6.0",
+    "structlog>=24.4",
+    "tenacity>=9.0",
+
+    # Cloud path. Both are optional at runtime: the app degrades to Ollama if
+    # they are missing or unconfigured.
+    "anthropic>=0.39",
+    "claude-agent-sdk>=0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.27",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# One event loop for the whole session. The asyncpg pool is a module-level
+# singleton bound to the loop that created it; with a fresh loop per test, the
+# second integration test inherits a pool whose connections belong to a loop
+# that has already been closed.
+asyncio_default_test_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests"]
+# Integration tests need a live Postgres; unit tests must run without one.
+markers = [
+    "integration: requires a live PostgreSQL instance",
+    "ollama: requires a running Ollama daemon",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]  # FastAPI Depends() in defaults is the documented idiom.

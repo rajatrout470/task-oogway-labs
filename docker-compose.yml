@@ -1,0 +1,114 @@
+# =============================================================================
+# The Lenny Growth Assistant — one-command startup
+#
+#   cp .env.example .env && docker compose up --build
+#
+# Ollama deliberately runs on the HOST, not in a container: on macOS a
+# containerised Ollama has no access to Apple Silicon GPU acceleration and runs
+# roughly an order of magnitude slower. Containers reach it via
+# host.docker.internal. See README "Why Ollama is not containerised".
+# =============================================================================
+
+services:
+
+  db:
+    # pgvector ships the extension prebuilt; compiling it into stock postgres
+    # would add minutes to every clean build for no benefit.
+    image: pgvector/pgvector:pg16
+    container_name: lenny-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lenny}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lenny_dev_password_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-lenny}
+    ports:
+      # 5433 on the host so this never collides with a local Postgres on 5432.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Backend waits on this, so a slow first boot can't produce a confusing
+      # "connection refused" crash loop.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lenny} -d ${POSTGRES_DB:-lenny}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lenny-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Compose-internal values override .env, which is written for the common
+      # case of running the backend natively.
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Named volume for the cloned corpus so re-ingest after a rebuild is fast
+      # and the 25MB clone isn't repeated on every container start.
+      - corpus:/app/data/corpus
+    extra_hosts:
+      # Required for Linux hosts; a no-op but harmless on Docker Desktop.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health/live').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    container_name: lenny-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - backend
+
+  # ---------------------------------------------------------------------------
+  # One-shot ingestion. Not started by `up` — run explicitly:
+  #
+  #   docker compose --profile ingest run --rm ingest
+  #
+  # Kept out of the default lifecycle because it is a minutes-long batch job,
+  # and silently blocking `up` on it would make the stack feel broken.
+  # ---------------------------------------------------------------------------
+  ingest:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    profiles: ["ingest"]
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - corpus:/app/data/corpus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "-m", "app.ingest.cli", "run"]
+
+volumes:
+  pgdata:
+  corpus:
